@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hidden in Images - hide a secret message inside a picture</title>
+<style>
+  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:760px;margin:0 auto;padding:24px;color:#111;line-height:1.5}
+  h1{font-size:28px;margin-bottom:4px} p.lead{color:#444}
+  .tabs{display:flex;gap:8px;margin:20px 0}
+  .tabs button{padding:10px 16px;border:1px solid #ccc;background:#fff;border-radius:8px;cursor:pointer}
+  .tabs button.on{background:#111;color:#fff}
+  section{border:1px solid #ddd;border-radius:12px;padding:20px}
+  label{display:block;margin:12px 0 4px;font-weight:600}
+  textarea,input[type=text],input[type=password]{width:100%;padding:10px;border:1px solid #bbb;border-radius:8px;box-sizing:border-box}
+  button.action{margin-top:14px;padding:11px 18px;background:#5b2ee5;color:#fff;border:0;border-radius:8px;cursor:pointer;font-size:15px}
+  button.action:disabled{opacity:.5}
+  img,canvas{max-width:100%;border:1px solid #ddd;border-radius:8px;margin-top:12px}
+  .note{background:#f5f3ff;border:1px solid #ddd6fe;border-radius:8px;padding:12px;margin-top:14px;font-size:14px}
+  .out{white-space:pre-wrap;background:#f6f6f6;border-radius:8px;padding:12px;margin-top:14px}
+  .warn{color:#991b1b} .ok{color:#166534}
+  small{color:#555}
+</style>
+</head>
+<body>
+<h1>Hidden in Images</h1>
+<p class="lead">Hide a secret message inside an ordinary-looking picture, so only someone who knows to look will find it. Inspired by the Fable 5.1 steganography post: a picture that looks normal can carry a message.</p>
+
+<div class="tabs">
+  <button id="tabHide" class="on" onclick="show('hide')">Hide a message</button>
+  <button id="tabReveal" onclick="show('reveal')">Reveal a message</button>
+  <button id="tabAbout" onclick="show('about')">How it works</button>
+</div>
+
+<section id="sec-hide">
+  <label for="coverFile">1. Cover picture (your own, or generate one below)</label>
+  <input type="file" id="coverFile" accept="image/png,image/jpeg,image/webp">
+  <label for="genPrompt">Or generate a cover picture with Pollinations image generation</label>
+  <input type="text" id="genPrompt" placeholder="e.g. a quiet street at dusk, film photo">
+  <button class="action" onclick="generateCover()">Generate cover picture</button>
+  <img id="coverPreview" alt="" style="display:none">
+
+  <label for="secret">2. Secret message</label>
+  <textarea id="secret" rows="3" placeholder="Type the message only the receiver should find"></textarea>
+
+  <label for="decoy">3. Decoy caption (optional, written by a Pollinations LLM)</label>
+  <textarea id="decoy" rows="2" placeholder="An innocent-looking caption for the picture"></textarea>
+  <button class="action" onclick="generateDecoy()">Write a decoy caption with Pollinations LLM</button>
+  <p><small>The decoy caption is what the picture appears to be about. The real message is hidden in the pixels, not in the caption.</small></p>
+
+  <label for="pollenKey">Your Pollinations token (optional)</label>
+  <input type="password" id="pollenKey" placeholder="Leave blank for the anonymous tier; with your own token, your own Pollen pays for LLM calls">
+  <p><small>Your token is used only in your browser for that one call and is never sent to any server of ours. There is no server: this page runs entirely in your browser.</small></p>
+
+  <button class="action" id="hideBtn" onclick="hideMessage()">Hide message and download PNG</button>
+  <div id="hideOut" class="out" style="display:none"></div>
+  <div class="note"><strong>Use PNG.</strong> The download is a PNG because PNG is lossless. Saving as JPEG re-encodes the picture and destroys the hidden bits.</div>
+</section>
+
+<section id="sec-reveal" style="display:none">
+  <label for="revealFile">Picture to check</label>
+  <input type="file" id="revealFile" accept="image/png">
+  <button class="action" onclick="revealMessage()">Reveal hidden message</button>
+  <div id="revealOut" class="out" style="display:none"></div>
+</section>
+
+<section id="sec-about" style="display:none">
+  <h2>How it works</h2>
+  <p>The message is written into the least significant bit of each red, green and blue pixel value. Changing a pixel from, say, 142 to 143 is invisible to the eye, but the pattern of those last bits spells out the message. A short header marks pictures made by this app, so reveal can tell a plain picture from a carrying picture.</p>
+  <p>Nothing is uploaded. Your picture and your message never leave your browser, except for the optional Pollinations calls you ask for: a cover picture from the Pollinations image model, and a decoy caption from a Pollinations text model.</p>
+  <p>Paying with your own Pollen: if you paste your own Pollinations token above, LLM calls are made with that token, so your own Pollen pays. Without a token the anonymous tier is used.</p>
+</section>
+
+<script src="stego.js"></script>
+<script>
+let coverCanvas = null, coverName = "hidden-message.png";
+function show(which){
+  for (const s of ["hide","reveal","about"]) document.getElementById("sec-"+s).style.display = (s===which) ? "block" : "none";
+  for (const t of ["Hide","Reveal","About"]) document.getElementById("tab"+t).classList.toggle("on", t.toLowerCase()===which);
+}
+function loadImageFile(file, done){
+  const img = new Image();
+  img.onload = () => { const c = document.createElement("canvas"); c.width = img.naturalWidth; c.height = img.naturalHeight; c.getContext("2d").drawImage(img, 0, 0); done(c); };
+  img.src = URL.createObjectURL(file);
+}
+document.getElementById("coverFile").addEventListener("change", e => {
+  if (!e.target.files[0]) return;
+  loadImageFile(e.target.files[0], c => { coverCanvas = c; const p = document.getElementById("coverPreview"); p.src = c.toDataURL("image/png"); p.style.display = "block"; coverName = e.target.files[0].name.replace(/\.[^.]+$/, "") + "-hidden.png"; });
+});
+async function generateCover(){
+  const prompt = document.getElementById("genPrompt").value.trim();
+  if (!prompt) { alert("Type a cover picture prompt first."); return; }
+  const url = "https://image.pollinations.ai/prompt/" + encodeURIComponent(prompt) + "?width=800&height=600&seed=" + Math.floor(Math.random()*100000) + "&nologo=true";
+  const img = new Image(); img.crossOrigin = "anonymous";
+  img.onload = () => { const c = document.createElement("canvas"); c.width = img.naturalWidth; c.height = img.naturalHeight; c.getContext("2d").drawImage(img, 0, 0); coverCanvas = c; const p = document.getElementById("coverPreview"); p.src = url; p.style.display = "block"; coverName = "hidden-message.png"; };
+  img.onerror = () => alert("Cover picture generation failed. Try again, or upload your own picture.");
+  img.src = url;
+}
+async function generateDecoy(){
+  const secret = document.getElementById("secret").value.trim();
+  const token = document.getElementById("pollenKey").value.trim();
+  const prompt = "Write one short, innocent, ordinary photo caption (under 20 words) that gives no hint of a secret. " +
+    (secret ? "The photo is about an everyday scene; do not mention secrets, hiding, or codes." : "");
+  try {
+    let text = "";
+    if (token) {
+      const r = await fetch("https://gen.pollinations.ai/text/openai", { method: "POST", headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token }, body: JSON.stringify({ model: "openai", messages: [{ role: "user", content: prompt }] }) });
+      if (r.ok) { const j = await r.json(); text = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || j.response || ""; }
+    }
+    if (!text) {
+      const r = await fetch("https://text.pollinations.ai/" + encodeURIComponent(prompt));
+      text = await r.text();
+    }
+    document.getElementById("decoy").value = text.trim();
+  } catch (e) { alert("Decoy caption failed. Check your connection and try again."); }
+}
+function hideMessage(){
+  const out = document.getElementById("hideOut"); out.style.display = "block";
+  if (!coverCanvas) { out.innerHTML = '<span class="warn">Upload or generate a cover picture first.</span>'; return; }
+  const secret = document.getElementById("secret").value;
+  if (!secret) { out.innerHTML = '<span class="warn">Type a secret message first.</span>'; return; }
+  const ctx = coverCanvas.getContext("2d");
+  const data = ctx.getImageData(0, 0, coverCanvas.width, coverCanvas.height);
+  const res = Stego.encodeMessage(data.data, secret);
+  if (!res.ok) { out.innerHTML = '<span class="warn">' + res.error + "</span>"; return; }
+  const c2 = document.createElement("canvas"); c2.width = coverCanvas.width; c2.height = coverCanvas.height;
+  c2.getContext("2d").putImageData(new ImageData(res.pixels, coverCanvas.width, coverCanvas.height), 0, 0);
+  c2.toBlob(blob => { const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = coverName; a.click();
+    out.innerHTML = '<span class="ok">Done. PNG downloaded (' + res.bytesUsed + ' bytes hidden). Share the PNG file itself, not a screenshot or JPEG, or the message will be lost.</span>'; }, "image/png");
+}
+function revealMessage(){
+  const out = document.getElementById("revealOut"); out.style.display = "block";
+  const f = document.getElementById("revealFile").files[0];
+  if (!f) { out.innerHTML = '<span class="warn">Choose a PNG picture first.</span>'; return; }
+  loadImageFile(f, c => {
+    const data = c.getContext("2d").getImageData(0, 0, c.width, c.height);
+    const res = Stego.decodeMessage(data.data);
+    out.innerHTML = res.ok ? '<span class="ok">Hidden message:</span>\n' + res.message.replace(/&/g,"&amp;").replace(/</g,"&lt;") : '<span class="warn">' + res.error + "</span>";
+  });
+}
+</script>
+</body>
+</html>
